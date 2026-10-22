@@ -39,6 +39,20 @@ jobs:
       - name: Make Gradle wrapper executable
         run: chmod +x gradlew
 
+      - name: Ensure pinned whisper.cpp sources (v1.9.5)
+        run: |
+          D=app/src/main/cpp/whisper.cpp
+          WANT=d1be6fde11ac6e0407606b4e42fe72d34add8037
+          if [ ! -f "$D/src/whisper.cpp" ]; then
+            echo "Submodule not checked out; fetching pinned whisper.cpp $WANT"
+            rm -rf "$D" && mkdir -p "$D"
+            git -C "$D" init -q
+            git -C "$D" remote add origin https://github.com/ggml-org/whisper.cpp
+            git -C "$D" fetch -q --depth 1 origin "$WANT"
+            git -C "$D" checkout -q FETCH_HEAD
+          fi
+          test "$(git -C "$D" rev-parse HEAD)" = "$WANT"
+
       - uses: gradle/actions/wrapper-validation@cc4fc85e6b35bafd578d5ffbc76a5518407e1af0 # v4.2.1
 
       - uses: actions/setup-java@8df1039502a15bceb9433410b1a100fbe190c53b # v4.5.0
@@ -120,6 +134,20 @@ jobs:
 
       - name: Make Gradle wrapper executable
         run: chmod +x gradlew
+
+      - name: Ensure pinned whisper.cpp sources (v1.9.5)
+        run: |
+          D=app/src/main/cpp/whisper.cpp
+          WANT=d1be6fde11ac6e0407606b4e42fe72d34add8037
+          if [ ! -f "$D/src/whisper.cpp" ]; then
+            echo "Submodule not checked out; fetching pinned whisper.cpp $WANT"
+            rm -rf "$D" && mkdir -p "$D"
+            git -C "$D" init -q
+            git -C "$D" remote add origin https://github.com/ggml-org/whisper.cpp
+            git -C "$D" fetch -q --depth 1 origin "$WANT"
+            git -C "$D" checkout -q FETCH_HEAD
+          fi
+          test "$(git -C "$D" rev-parse HEAD)" = "$WANT"
       - uses: actions/setup-java@8df1039502a15bceb9433410b1a100fbe190c53b # v4.5.0
         with:
           distribution: temurin
@@ -195,6 +223,20 @@ jobs:
 
       - name: Make Gradle wrapper executable
         run: chmod +x gradlew
+
+      - name: Ensure pinned whisper.cpp sources (v1.9.5)
+        run: |
+          D=app/src/main/cpp/whisper.cpp
+          WANT=d1be6fde11ac6e0407606b4e42fe72d34add8037
+          if [ ! -f "$D/src/whisper.cpp" ]; then
+            echo "Submodule not checked out; fetching pinned whisper.cpp $WANT"
+            rm -rf "$D" && mkdir -p "$D"
+            git -C "$D" init -q
+            git -C "$D" remote add origin https://github.com/ggml-org/whisper.cpp
+            git -C "$D" fetch -q --depth 1 origin "$WANT"
+            git -C "$D" checkout -q FETCH_HEAD
+          fi
+          test "$(git -C "$D" rev-parse HEAD)" = "$WANT"
       - uses: actions/setup-java@8df1039502a15bceb9433410b1a100fbe190c53b # v4.5.0
         with:
           distribution: temurin
