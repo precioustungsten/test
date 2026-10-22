@@ -61,7 +61,17 @@ jobs:
         run: ./gradlew --no-daemon lintDebug
 
       - name: Build debug APK
-        run: ./gradlew --no-daemon --stacktrace assembleDebug
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace assembleDebug 2>&1 | tee build.log
+
+      - name: Summarise build errors
+        if: failure()
+        run: |
+          grep -E "^e: |error:|FAILED|What went wrong|Execution failed|undefined reference|fatal error|CMake Error|ninja: build stopped" build.log | head -25 | cut -c1-300 > errs.txt || true
+          msg=$(sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g' errs.txt)
+          echo "::error title=Gradle build errors::$msg"
+          tail -n 60 build.log
 
       - name: Checksums
         run: |
@@ -138,7 +148,17 @@ jobs:
           OPENEAR_KEYSTORE_PASSWORD: ${{ secrets.OPENEAR_KEYSTORE_PASSWORD }}
           OPENEAR_KEY_ALIAS: ${{ secrets.OPENEAR_KEY_ALIAS }}
           OPENEAR_KEY_PASSWORD: ${{ secrets.OPENEAR_KEY_PASSWORD }}
-        run: ./gradlew --no-daemon --stacktrace assembleRelease
+        run: |
+          set -o pipefail
+          ./gradlew --no-daemon --stacktrace assembleRelease 2>&1 | tee build.log
+
+      - name: Summarise build errors
+        if: failure()
+        run: |
+          grep -E "^e: |error:|FAILED|What went wrong|Execution failed|undefined reference|fatal error|CMake Error|ninja: build stopped" build.log | head -25 | cut -c1-300 > errs.txt || true
+          msg=$(sed ':a;N;$!ba;s/%/%25/g;s/\r//g;s/\n/%0A/g' errs.txt)
+          echo "::error title=Gradle build errors::$msg"
+          tail -n 60 build.log
 
       - name: Delete signing key
         if: always()
