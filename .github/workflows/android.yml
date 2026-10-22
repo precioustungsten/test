@@ -1,0 +1,203 @@
+name: Android CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      run_instrumentation:
+        description: "Also run emulator (instrumentation) tests"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep in sync with app/build.gradle.kts.
+  ANDROID_PLATFORM: "platforms;android-35"
+  ANDROID_BUILD_TOOLS: "build-tools;35.0.0"
+  ANDROID_NDK: "ndk;27.2.12479018"
+  ANDROID_CMAKE: "cmake;3.22.1"
+
+jobs:
+  build:
+    name: Test + debug APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - uses: gradle/actions/wrapper-validation@cc4fc85e6b35bafd578d5ffbc76a5518407e1af0 # v4.2.1
+
+      - uses: actions/setup-java@8df1039502a15bceb9433410b1a100fbe190c53b # v4.5.0
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: gradle/actions/setup-gradle@cc4fc85e6b35bafd578d5ffbc76a5518407e1af0 # v4.2.1
+
+      - name: Install Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "$ANDROID_PLATFORM" "$ANDROID_BUILD_TOOLS" "$ANDROID_NDK" "$ANDROID_CMAKE" > /dev/null
+
+      - name: Unit tests
+        run: ./gradlew --no-daemon --stacktrace testDebugUnitTest
+
+      - name: Lint
+        run: ./gradlew --no-daemon lintDebug
+
+      - name: Build debug APK
+        run: ./gradlew --no-daemon --stacktrace assembleDebug
+
+      - name: Checksums
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/debug/*.apk dist/OpenEar-debug.apk
+          (cd dist && sha256sum OpenEar-debug.apk | tee OpenEar-debug.apk.sha256)
+
+      - name: Verify no model is bundled in the APK
+        run: |
+          size=$(stat -c %s dist/OpenEar-debug.apk)
+          echo "APK size: $size bytes"
+          # Small .bin files (e.g. kotlinx-coroutines' DebugProbesKt.bin) are normal; models are >1 MB.
+          if unzip -l dist/OpenEar-debug.apk | awk '$1 > 1000000 && $4 ~ /\.(bin|ggml|gguf)$/ {print; found=1} END {exit !found}'; then
+            echo "A model-sized file was found inside the APK"; exit 1
+          fi
+
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: OpenEar-debug-apk
+          path: dist/*
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        if: always()
+        with:
+          name: test-and-lint-reports
+          path: |
+            app/build/reports/tests/
+            app/build/test-results/
+            app/build/reports/lint-results-*.html
+            app/build/reports/lint-results-*.xml
+          if-no-files-found: ignore
+
+  release-apk:
+    name: Release APK
+    if: github.event_name != 'pull_request' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: write # only used to attach files to a GitHub Release on v* tags
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+      - uses: actions/setup-java@8df1039502a15bceb9433410b1a100fbe190c53b # v4.5.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@cc4fc85e6b35bafd578d5ffbc76a5518407e1af0 # v4.2.1
+      - name: Install Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "$ANDROID_PLATFORM" "$ANDROID_BUILD_TOOLS" "$ANDROID_NDK" "$ANDROID_CMAKE" > /dev/null
+
+      - name: Prepare signing key (only if secrets are configured)
+        env:
+          KEYSTORE_B64: ${{ secrets.OPENEAR_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/openear-release.jks"
+            echo "OPENEAR_KEYSTORE_PATH=$RUNNER_TEMP/openear-release.jks" >> "$GITHUB_ENV"
+            echo "Signing key found: release APK will be signed."
+          else
+            echo "No signing key configured: the release APK will be UNSIGNED (not installable)."
+          fi
+
+      - name: Build release APK
+        env:
+          OPENEAR_KEYSTORE_PASSWORD: ${{ secrets.OPENEAR_KEYSTORE_PASSWORD }}
+          OPENEAR_KEY_ALIAS: ${{ secrets.OPENEAR_KEY_ALIAS }}
+          OPENEAR_KEY_PASSWORD: ${{ secrets.OPENEAR_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon --stacktrace assembleRelease
+
+      - name: Delete signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/openear-release.jks"
+
+      - name: Checksums
+        run: |
+          mkdir -p dist
+          cp app/build/outputs/apk/release/*.apk dist/
+          (cd dist && sha256sum *.apk | tee SHA256SUMS.txt)
+
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        with:
+          name: OpenEar-release-apk
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Attach to GitHub Release (tags only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@e7a8f85e1c67a31e6ed99a94b41bd0b71bbee6b8 # v2.0.9
+        with:
+          files: dist/*
+          generate_release_notes: true
+
+  instrumentation:
+    name: Emulator tests (manual)
+    if: github.event_name == 'workflow_dispatch' && inputs.run_instrumentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          submodules: recursive
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+      - uses: actions/setup-java@8df1039502a15bceb9433410b1a100fbe190c53b # v4.5.0
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@cc4fc85e6b35bafd578d5ffbc76a5518407e1af0 # v4.2.1
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Install Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install \
+            "$ANDROID_PLATFORM" "$ANDROID_BUILD_TOOLS" "$ANDROID_NDK" "$ANDROID_CMAKE" > /dev/null
+      - uses: reactivecircus/android-emulator-runner@f0d1ed2dcad93c7479e8b2f2226c83af54494915 # v2.32.0
+        with:
+          api-level: 30
+          arch: x86_64
+          script: ./gradlew --no-daemon connectedDebugAndroidTest
+      - uses: actions/upload-artifact@b4b15b8c7c6ac21ea08fcf65892d2ee8f75cf882 # v4.4.3
+        if: always()
+        with:
+          name: instrumentation-reports
+          path: app/build/reports/androidTests/
+          if-no-files-found: ignore
